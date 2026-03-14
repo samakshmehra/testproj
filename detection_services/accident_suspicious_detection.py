@@ -23,6 +23,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from detection_services.llm.gemini_analyzer import GeminiAnalyzer
 from detection_services.schemas.alert_schema import DetectionAlert
+from newservice.detection_service.client import CallingServiceClient
 
 load_dotenv()
 
@@ -53,26 +54,9 @@ class Config:
     # Model
     model_path: str = "yolo26n.pt"
     camera_index: int = 1
-    calling_agent_base_url: str = os.getenv(
-        "DETECTION_CALLING_SERVER_URL",
-        os.getenv(
-            "DETECTION_CALLING_AGENT_BASE_URL",
-            os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
-        ),
-    ).strip()
-    calling_agent_info_url: str = os.getenv(
-        "DETECTION_CALLING_AGENT_INFO_URL",
-        os.getenv("CALLING_AGENT_INFO_URL", ""),
-    ).strip()
-    calling_agent_ngrok_url: str = os.getenv(
-        "DETECTION_CALLING_SERVER_URL",
-        os.getenv(
-            "DETECTION_NGROK_URL",
-            os.getenv(
-                "CALLING_AGENT_NGROK_URL",
-                os.getenv("AGENT_2_NGROK_URL", ""),
-            ),
-        ),
+    calling_service_base_url: str = os.getenv(
+        "NEW_CALLING_SERVICE_BASE_URL",
+        "https://untrusting-oxymoronically-annita.ngrok-free.dev",
     ).strip()
     alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "+917011072161").strip()
 
@@ -146,6 +130,10 @@ class SurveillanceSystem:
 
         # Gemini Analyzer
         self.llm_analyzer = GeminiAnalyzer()
+        self.calling_service_client = CallingServiceClient(
+            base_url=self.cfg.calling_service_base_url,
+            timeout=5.0,
+        )
 
         # Memory stores
         self.track_history: dict[int, deque] = defaultdict(
@@ -274,31 +262,22 @@ class SurveillanceSystem:
                 self.llm_busy = False
 
     def _trigger_voice_alert(self, message: str):
-        """Send the LLM-generated spoken alert to the calling server."""
+        """Send the LLM-generated spoken alert to the hosted calling service."""
         if not self.cfg.alert_phone_number:
             logger.error("ALERT_PHONE_NUMBER is not configured; skipping voice alert")
             return
-
-        info_url = self.cfg.calling_agent_info_url or (
-            f"{self.cfg.calling_agent_base_url.rstrip('/')}/info/send"
-        )
-
-        payload = {
-            "number": self.cfg.alert_phone_number,
-            "message": message,
-        }
-        if self.cfg.calling_agent_ngrok_url:
-            payload["ngrok_url"] = self.cfg.calling_agent_ngrok_url
 
         try:
             logger.info(
                 "Triggering voice alert to %s via %s",
                 self.cfg.alert_phone_number,
-                info_url,
+                self.cfg.calling_service_base_url,
             )
-            response = requests.post(info_url, json=payload, timeout=5)
-            response.raise_for_status()
-            logger.info("Voice alert triggered successfully: %s", response.json())
+            response = self.calling_service_client.send_broadcast_message(
+                message=message,
+                number=self.cfg.alert_phone_number,
+            )
+            logger.info("Voice alert triggered successfully: %s", response)
         except Exception as e:
             logger.error("Failed to trigger voice alert: %s", e)
 
@@ -671,37 +650,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Accident and suspicious activity detection service")
     parser.add_argument("--camera-index", type=int, default=1)
     parser.add_argument(
+        "--calling-service-base-url",
         "--calling-agent-base-url",
+        dest="calling_service_base_url",
         default=os.getenv(
-            "DETECTION_CALLING_SERVER_URL",
-            os.getenv(
-                "DETECTION_CALLING_AGENT_BASE_URL",
-                os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
-            ),
+            "NEW_CALLING_SERVICE_BASE_URL",
+            "https://untrusting-oxymoronically-annita.ngrok-free.dev",
         ),
-        help="Base URL for the calling server. /info/send will be appended.",
-    )
-    parser.add_argument(
-        "--calling-agent-info-url",
-        default=os.getenv(
-            "DETECTION_CALLING_AGENT_INFO_URL",
-            os.getenv("CALLING_AGENT_INFO_URL", ""),
-        ),
-        help="Full info endpoint URL. Overrides --calling-agent-base-url when set.",
-    )
-    parser.add_argument(
-        "--calling-agent-ngrok-url",
-        default=os.getenv(
-            "DETECTION_CALLING_SERVER_URL",
-            os.getenv(
-                "DETECTION_NGROK_URL",
-                os.getenv(
-                    "CALLING_AGENT_NGROK_URL",
-                    os.getenv("AGENT_2_NGROK_URL", ""),
-                ),
-            ),
-        ),
-        help="Public ngrok base URL used by Twilio callbacks.",
+        help="Hosted calling-service base URL. Detector sends only number and message.",
     )
     parser.add_argument(
         "--alert-number",
@@ -715,9 +671,7 @@ if __name__ == "__main__":
     args = parse_args()
     config = Config(
         camera_index=args.camera_index,
-        calling_agent_base_url=args.calling_agent_base_url,
-        calling_agent_info_url=args.calling_agent_info_url,
-        calling_agent_ngrok_url=args.calling_agent_ngrok_url,
+        calling_service_base_url=args.calling_service_base_url,
         alert_phone_number=args.alert_number,
     )
     system = SurveillanceSystem(config)

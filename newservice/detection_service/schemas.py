@@ -4,23 +4,20 @@ from pydantic import BaseModel, Field
 
 
 class DetectionBroadcastRequest(BaseModel):
-    number: str = Field(..., description="Phone number to call.")
-    message: str = Field(..., min_length=1, description="Message that should be spoken.")
-    public_base_url: str | None = Field(
+    number: str | None = Field(
         default=None,
-        description="Optional public base URL for Twilio, such as ngrok.",
+        description="Optional phone number. Falls back to ALERT_PHONE_NUMBER.",
     )
+    message: str = Field(..., min_length=1, description="Message that should be spoken.")
 
 
 class DetectionCollectRequest(BaseModel):
-    number: str = Field(..., description="Phone number to call.")
+    number: str | None = Field(
+        default=None,
+        description="Optional phone number. Falls back to ALERT_PHONE_NUMBER.",
+    )
     prompt: str = Field(
         default="Hello from the grievance helpline. Please describe your issue after the beep.",
         min_length=1,
         description="Prompt that should be played before recording.",
     )
-    public_base_url: str | None = Field(
-        default=None,
-        description="Optional public base URL for Twilio, such as ngrok.",
-    )
-

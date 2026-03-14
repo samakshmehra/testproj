@@ -61,18 +61,20 @@ class CallingServiceRuntime:
 
     def resolve_base_url(
         self,
-        request: Request,
-        explicit_base_url: str | None = None,
+        request: Request | None = None,
     ) -> str:
-        if explicit_base_url:
-            return explicit_base_url.rstrip("/")
+        if self.settings.public_base_url:
+            return self.settings.public_base_url
 
-        forwarded_host = request.headers.get("x-forwarded-host")
-        if forwarded_host:
-            proto = request.headers.get("x-forwarded-proto", "https")
-            return f"{proto}://{forwarded_host}".rstrip("/")
+        if request is not None:
+            forwarded_host = request.headers.get("x-forwarded-host")
+            if forwarded_host:
+                proto = request.headers.get("x-forwarded-proto", "https")
+                return f"{proto}://{forwarded_host}".rstrip("/")
 
-        return str(request.base_url).rstrip("/")
+            return str(request.base_url).rstrip("/")
+
+        raise RuntimeError("Public base URL is not configured.")
 
     def create_broadcast_session(
         self,
@@ -178,4 +180,3 @@ class CallingServiceRuntime:
 
 
 runtime = CallingServiceRuntime()
-
