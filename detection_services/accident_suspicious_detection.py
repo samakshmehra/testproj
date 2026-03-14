@@ -1,4 +1,5 @@
 from ultralytics import YOLO
+import argparse
 import supervision as sv
 import cv2
 import numpy as np
@@ -7,6 +8,7 @@ import time
 import threading
 import logging
 import json
+import requests
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
 import sys
@@ -51,6 +53,28 @@ class Config:
     # Model
     model_path: str = "yolo26n.pt"
     camera_index: int = 1
+    calling_agent_base_url: str = os.getenv(
+        "DETECTION_CALLING_SERVER_URL",
+        os.getenv(
+            "DETECTION_CALLING_AGENT_BASE_URL",
+            os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
+        ),
+    ).strip()
+    calling_agent_info_url: str = os.getenv(
+        "DETECTION_CALLING_AGENT_INFO_URL",
+        os.getenv("CALLING_AGENT_INFO_URL", ""),
+    ).strip()
+    calling_agent_ngrok_url: str = os.getenv(
+        "DETECTION_CALLING_SERVER_URL",
+        os.getenv(
+            "DETECTION_NGROK_URL",
+            os.getenv(
+                "CALLING_AGENT_NGROK_URL",
+                os.getenv("AGENT_2_NGROK_URL", ""),
+            ),
+        ),
+    ).strip()
+    alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "+917011072161").strip()
 
     # Accident detection
     accident_distance: int = 100
@@ -240,11 +264,43 @@ class SurveillanceSystem:
                 )
                 logger.info("LLM Result: %s", result.model_dump_json(indent=2))
 
+                if result.is_valid and result.message:
+                    self._trigger_voice_alert(result.message)
+
         except Exception as e:
             logger.error("LLM verification failed: %s", e)
         finally:
             with self.llm_lock:
                 self.llm_busy = False
+
+    def _trigger_voice_alert(self, message: str):
+        """Send the LLM-generated spoken alert to the calling server."""
+        if not self.cfg.alert_phone_number:
+            logger.error("ALERT_PHONE_NUMBER is not configured; skipping voice alert")
+            return
+
+        info_url = self.cfg.calling_agent_info_url or (
+            f"{self.cfg.calling_agent_base_url.rstrip('/')}/info/send"
+        )
+
+        payload = {
+            "number": self.cfg.alert_phone_number,
+            "message": message,
+        }
+        if self.cfg.calling_agent_ngrok_url:
+            payload["ngrok_url"] = self.cfg.calling_agent_ngrok_url
+
+        try:
+            logger.info(
+                "Triggering voice alert to %s via %s",
+                self.cfg.alert_phone_number,
+                info_url,
+            )
+            response = requests.post(info_url, json=payload, timeout=5)
+            response.raise_for_status()
+            logger.info("Voice alert triggered successfully: %s", response.json())
+        except Exception as e:
+            logger.error("Failed to trigger voice alert: %s", e)
 
     def _trigger_llm_verification(self, frame: np.ndarray):
         """Launch LLM verification in a background thread (non-blocking)."""
@@ -544,21 +600,7 @@ class SurveillanceSystem:
                         logger.info("Sending detection frame to LLM...")
                         self._trigger_llm_verification(trigger_frame)
                         self.save_clip()
-                        
-                        # Trigger grievance call
-                        try:
-                            response = requests.post(
-                                self.grievance_url,
-                                json={"ngrok_url": self.ngrok_url},
-                                timeout=5
-                            )
-                            if response.ok:
-                                logger.info("Grievance call triggered: %s", response.json())
-                            else:
-                                logger.error("Failed to trigger call: %s", response.text)
-                        except Exception as e:
-                            logger.error("Error triggering grievance call: %s", e)
-                        
+
                         self.accident_detected_flag = False
                         self.frames_after_accident = 0
 
@@ -625,7 +667,58 @@ class SurveillanceSystem:
 # ──────────────────────────────────────────────
 # Entry Point
 # ──────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Accident and suspicious activity detection service")
+    parser.add_argument("--camera-index", type=int, default=1)
+    parser.add_argument(
+        "--calling-agent-base-url",
+        default=os.getenv(
+            "DETECTION_CALLING_SERVER_URL",
+            os.getenv(
+                "DETECTION_CALLING_AGENT_BASE_URL",
+                os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
+            ),
+        ),
+        help="Base URL for the calling server. /info/send will be appended.",
+    )
+    parser.add_argument(
+        "--calling-agent-info-url",
+        default=os.getenv(
+            "DETECTION_CALLING_AGENT_INFO_URL",
+            os.getenv("CALLING_AGENT_INFO_URL", ""),
+        ),
+        help="Full info endpoint URL. Overrides --calling-agent-base-url when set.",
+    )
+    parser.add_argument(
+        "--calling-agent-ngrok-url",
+        default=os.getenv(
+            "DETECTION_CALLING_SERVER_URL",
+            os.getenv(
+                "DETECTION_NGROK_URL",
+                os.getenv(
+                    "CALLING_AGENT_NGROK_URL",
+                    os.getenv("AGENT_2_NGROK_URL", ""),
+                ),
+            ),
+        ),
+        help="Public ngrok base URL used by Twilio callbacks.",
+    )
+    parser.add_argument(
+        "--alert-number",
+        default=os.getenv("ALERT_PHONE_NUMBER", "+917011072161"),
+        help="Phone number that should receive the outbound alert call.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    config = Config()
+    args = parse_args()
+    config = Config(
+        camera_index=args.camera_index,
+        calling_agent_base_url=args.calling_agent_base_url,
+        calling_agent_info_url=args.calling_agent_info_url,
+        calling_agent_ngrok_url=args.calling_agent_ngrok_url,
+        alert_phone_number=args.alert_number,
+    )
     system = SurveillanceSystem(config)
     system.run()
