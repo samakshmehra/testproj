@@ -191,7 +191,7 @@ def start_call():
 
     resp.record(
         max_length=30,
-        timeout=1,
+        timeout=2,
         action="/conversation",
         play_beep=False,
         trim="trim-silence",
@@ -224,7 +224,7 @@ def conversation():
         resp = VoiceResponse()
         resp.say("Sorry, didn't catch that.")
         resp.record(
-            max_length=30, timeout=1, action="/conversation",
+            max_length=30, timeout=2, action="/conversation",
             play_beep=False, trim="trim-silence",
         )
         return str(resp)
@@ -280,7 +280,7 @@ def conversation():
         resp.hangup()
     else:
         resp.record(
-            max_length=30, timeout=1, action="/conversation",
+            max_length=30, timeout=2, action="/conversation",
             play_beep=False, trim="trim-silence",
         )
 
