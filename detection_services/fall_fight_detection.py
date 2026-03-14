@@ -14,6 +14,8 @@ from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 import os
+import urllib3
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # Add the project root to sys.path so we can import 'detection_services'
@@ -40,6 +42,8 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ──────────────────────────────────────────────
@@ -73,7 +77,13 @@ class PoseConfig:
             ),
         ),
     ).strip()
-    alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "+917011072161").strip()
+    alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "7982373129").strip()
+    verify_ssl: bool = os.getenv("DETECTION_VERIFY_SSL", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     # Fight detection
     fight_proximity: float = 150.0       # px — how close people need to be
@@ -107,6 +117,12 @@ class PoseConfig:
     LEFT_ANKLE: int = 15
     RIGHT_ANKLE: int = 16
     NOSE: int = 0
+
+    def resolved_info_url(self) -> str:
+        """Return the effective calling-agent info endpoint."""
+        return self.calling_agent_info_url or (
+            f"{self.calling_agent_base_url.rstrip('/')}/info/send"
+        )
 
 
 # ──────────────────────────────────────────────
@@ -377,9 +393,7 @@ class PoseSurveillanceSystem:
             logger.error("ALERT_PHONE_NUMBER is not configured; skipping voice alert")
             return
 
-        info_url = self.cfg.calling_agent_info_url or (
-            f"{self.cfg.calling_agent_base_url.rstrip('/')}/info/send"
-        )
+        info_url = self.cfg.resolved_info_url()
 
         payload = {
             "number": self.cfg.alert_phone_number,
@@ -394,7 +408,12 @@ class PoseSurveillanceSystem:
                 self.cfg.alert_phone_number,
                 info_url,
             )
-            response = requests.post(info_url, json=payload, timeout=5)
+            response = requests.post(
+                info_url,
+                json=payload,
+                timeout=40,
+                verify=self.cfg.verify_ssl,
+            )
             response.raise_for_status()
             logger.info("Voice alert triggered successfully: %s", response.json())
         except Exception as e:
@@ -626,6 +645,35 @@ class PoseSurveillanceSystem:
 # ──────────────────────────────────────────────
 # Entry Point
 # ──────────────────────────────────────────────
+def _is_valid_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def validate_startup_config(config: PoseConfig) -> None:
+    """Fail fast on invalid URL wiring and print resolved runtime config."""
+    info_url = config.resolved_info_url()
+    if not _is_valid_http_url(info_url):
+        raise ValueError(
+            "Invalid calling-agent info URL. Set DETECTION_CALLING_AGENT_INFO_URL "
+            "or DETECTION_CALLING_AGENT_BASE_URL to a valid http(s) URL."
+        )
+
+    if config.calling_agent_ngrok_url and not _is_valid_http_url(
+        config.calling_agent_ngrok_url
+    ):
+        raise ValueError(
+            "Invalid DETECTION_NGROK_URL/CALLING_AGENT_NGROK_URL value."
+        )
+
+    if not config.alert_phone_number:
+        raise ValueError("ALERT_PHONE_NUMBER is empty.")
+
+    logger.info("Resolved calling-agent info URL: %s", info_url)
+    logger.info("Detection ngrok callback URL payload: %s", config.calling_agent_ngrok_url or "<empty>")
+    logger.info("Outbound SSL verification enabled: %s", config.verify_ssl)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fight and fall detection service")
     parser.add_argument("--camera-index", type=int, default=1)
@@ -664,7 +712,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--alert-number",
-        default=os.getenv("ALERT_PHONE_NUMBER", "+917011072161"),
+        default=os.getenv("ALERT_PHONE_NUMBER", "7982373129"),
         help="Phone number that should receive the outbound alert call.",
     )
     return parser.parse_args()
@@ -679,5 +727,10 @@ if __name__ == "__main__":
         calling_agent_ngrok_url=args.calling_agent_ngrok_url,
         alert_phone_number=args.alert_number,
     )
+    try:
+        validate_startup_config(config)
+    except ValueError as exc:
+        logger.error("Startup configuration error: %s", exc)
+        sys.exit(2)
     system = PoseSurveillanceSystem(config)
     system.run()
