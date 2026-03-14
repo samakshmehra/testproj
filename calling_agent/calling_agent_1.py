@@ -35,7 +35,6 @@ from twilio.twiml.voice_response import VoiceResponse
 from dotenv import load_dotenv
 
 # Import our new modular services
-from calling_agent.stt import GeminiSTT
 from calling_agent.tts import GeminiTTS
 from calling_agent.llm import GeminiLLM
 
@@ -79,7 +78,6 @@ logger.info("Audio files stored in: %s", AUDIO_DIR)
 # ──────────────────────────────────────────────
 # AI Services
 # ──────────────────────────────────────────────
-stt_service = GeminiSTT()
 tts_service = GeminiTTS(AUDIO_DIR)
 llm_service = GeminiLLM()
 
