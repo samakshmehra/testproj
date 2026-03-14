@@ -14,6 +14,8 @@ from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 import os
+import urllib3
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # Add the project root to sys.path so we can import 'detection_services'
@@ -22,6 +24,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from detection_services.llm.gemini_analyzer import GeminiAnalyzer
 from detection_services.schemas.alert_schema import DetectionAlert
+from newservice.detection_service.client import CallingServiceClient
 
 load_dotenv()
 
@@ -41,6 +44,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 # ──────────────────────────────────────────────
 # Configuration
@@ -52,28 +57,17 @@ class PoseConfig:
     # Model
     model_path: str = "yolo26n-pose.pt"
     camera_index: int = 1
-    calling_agent_base_url: str = os.getenv(
-        "DETECTION_CALLING_SERVER_URL",
-        os.getenv(
-            "DETECTION_CALLING_AGENT_BASE_URL",
-            os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
-        ),
+    calling_service_base_url: str = os.getenv(
+        "NEW_CALLING_SERVICE_BASE_URL",
+        "https://untrusting-oxymoronically-annita.ngrok-free.dev",
     ).strip()
-    calling_agent_info_url: str = os.getenv(
-        "DETECTION_CALLING_AGENT_INFO_URL",
-        os.getenv("CALLING_AGENT_INFO_URL", ""),
-    ).strip()
-    calling_agent_ngrok_url: str = os.getenv(
-        "DETECTION_CALLING_SERVER_URL",
-        os.getenv(
-            "DETECTION_NGROK_URL",
-            os.getenv(
-                "CALLING_AGENT_NGROK_URL",
-                os.getenv("AGENT_2_NGROK_URL", ""),
-            ),
-        ),
-    ).strip()
-    alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "+917011072161").strip()
+    alert_phone_number: str = os.getenv("ALERT_PHONE_NUMBER", "7982373129").strip()
+    verify_ssl: bool = os.getenv("DETECTION_VERIFY_SSL", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     # Fight detection
     fight_proximity: float = 150.0       # px — how close people need to be
@@ -148,6 +142,10 @@ class PoseSurveillanceSystem:
 
         # Gemini Analyzer 
         self.llm_analyzer = GeminiAnalyzer()
+        self.calling_service_client = CallingServiceClient(
+            base_url=self.cfg.calling_service_base_url,
+            timeout=40.0,
+        )
 
         # ── Per-person wrist history (keyed by person index in frame) ──
         # For proper tracking we use a sliding window of wrist positions
@@ -372,31 +370,22 @@ class PoseSurveillanceSystem:
                 self.llm_busy = False
 
     def _trigger_voice_alert(self, message: str):
-        """Send the LLM-generated spoken alert to the common calling server."""
+        """Send the LLM-generated spoken alert to the hosted calling service."""
         if not self.cfg.alert_phone_number:
             logger.error("ALERT_PHONE_NUMBER is not configured; skipping voice alert")
             return
-
-        info_url = self.cfg.calling_agent_info_url or (
-            f"{self.cfg.calling_agent_base_url.rstrip('/')}/info/send"
-        )
-
-        payload = {
-            "number": self.cfg.alert_phone_number,
-            "message": message,
-        }
-        if self.cfg.calling_agent_ngrok_url:
-            payload["ngrok_url"] = self.cfg.calling_agent_ngrok_url
 
         try:
             logger.info(
                 "Triggering voice alert to %s via %s",
                 self.cfg.alert_phone_number,
-                info_url,
+                self.cfg.calling_service_base_url,
             )
-            response = requests.post(info_url, json=payload, timeout=5)
-            response.raise_for_status()
-            logger.info("Voice alert triggered successfully: %s", response.json())
+            response = self.calling_service_client.send_broadcast_message(
+                message=message,
+                number=self.cfg.alert_phone_number,
+            )
+            logger.info("Voice alert triggered successfully: %s", response)
         except Exception as e:
             logger.error("Failed to trigger voice alert: %s", e)
 
@@ -626,45 +615,42 @@ class PoseSurveillanceSystem:
 # ──────────────────────────────────────────────
 # Entry Point
 # ──────────────────────────────────────────────
+def _is_valid_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def validate_startup_config(config: PoseConfig) -> None:
+    """Fail fast on invalid URL wiring and print resolved runtime config."""
+    if not _is_valid_http_url(config.calling_service_base_url):
+        raise ValueError(
+            "Invalid calling service URL. Set NEW_CALLING_SERVICE_BASE_URL "
+            "to a valid http(s) URL."
+        )
+
+    if not config.alert_phone_number:
+        raise ValueError("ALERT_PHONE_NUMBER is empty.")
+
+    logger.info("Resolved calling service URL: %s", config.calling_service_base_url)
+    logger.info("Outbound SSL verification enabled: %s", config.verify_ssl)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fight and fall detection service")
     parser.add_argument("--camera-index", type=int, default=1)
     parser.add_argument(
+        "--calling-service-base-url",
         "--calling-agent-base-url",
+        dest="calling_service_base_url",
         default=os.getenv(
-            "DETECTION_CALLING_SERVER_URL",
-            os.getenv(
-                "DETECTION_CALLING_AGENT_BASE_URL",
-                os.getenv("CALLING_AGENT_BASE_URL", "http://localhost:5002"),
-            ),
+            "NEW_CALLING_SERVICE_BASE_URL",
+            "https://untrusting-oxymoronically-annita.ngrok-free.dev",
         ),
-        help="Base URL for the calling server. /info/send will be appended.",
-    )
-    parser.add_argument(
-        "--calling-agent-info-url",
-        default=os.getenv(
-            "DETECTION_CALLING_AGENT_INFO_URL",
-            os.getenv("CALLING_AGENT_INFO_URL", ""),
-        ),
-        help="Full info endpoint URL. Overrides --calling-agent-base-url when set.",
-    )
-    parser.add_argument(
-        "--calling-agent-ngrok-url",
-        default=os.getenv(
-            "DETECTION_CALLING_SERVER_URL",
-            os.getenv(
-                "DETECTION_NGROK_URL",
-                os.getenv(
-                    "CALLING_AGENT_NGROK_URL",
-                    os.getenv("AGENT_2_NGROK_URL", ""),
-                ),
-            ),
-        ),
-        help="Public ngrok base URL used by Twilio callbacks.",
+        help="Hosted calling-service base URL. Detector sends only number and message.",
     )
     parser.add_argument(
         "--alert-number",
-        default=os.getenv("ALERT_PHONE_NUMBER", "+917011072161"),
+        default=os.getenv("ALERT_PHONE_NUMBER", "7982373129"),
         help="Phone number that should receive the outbound alert call.",
     )
     return parser.parse_args()
@@ -674,10 +660,13 @@ if __name__ == "__main__":
     args = parse_args()
     config = PoseConfig(
         camera_index=args.camera_index,
-        calling_agent_base_url=args.calling_agent_base_url,
-        calling_agent_info_url=args.calling_agent_info_url,
-        calling_agent_ngrok_url=args.calling_agent_ngrok_url,
+        calling_service_base_url=args.calling_service_base_url,
         alert_phone_number=args.alert_number,
     )
+    try:
+        validate_startup_config(config)
+    except ValueError as exc:
+        logger.error("Startup configuration error: %s", exc)
+        sys.exit(2)
     system = PoseSurveillanceSystem(config)
     system.run()

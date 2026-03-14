@@ -31,13 +31,12 @@ async def serve_audio(filename: str) -> FileResponse:
 @app.post("/api/calls/broadcast")
 async def create_broadcast_call(
     payload: BroadcastCallRequest,
-    request: Request,
 ) -> JSONResponse:
     ready, message = runtime.ensure_twilio_ready()
     if not ready:
         raise HTTPException(status_code=500, detail=message)
 
-    base_url = runtime.resolve_base_url(request, payload.public_base_url)
+    base_url = runtime.resolve_base_url()
     session = runtime.create_broadcast_session(
         number=payload.number,
         message=payload.message,
@@ -74,13 +73,12 @@ async def create_broadcast_call(
 @app.post("/api/calls/collect-details")
 async def create_collect_details_call(
     payload: CollectDetailsCallRequest,
-    request: Request,
 ) -> JSONResponse:
     ready, message = runtime.ensure_twilio_ready()
     if not ready:
         raise HTTPException(status_code=500, detail=message)
 
-    base_url = runtime.resolve_base_url(request, payload.public_base_url)
+    base_url = runtime.resolve_base_url()
     session = runtime.create_collect_session(
         number=payload.number,
         prompt=payload.prompt,
@@ -217,4 +215,3 @@ async def twilio_call_flow(request: Request) -> Response:
     twiml.say("Thank you. Your details have been recorded.")
     twiml.hangup()
     return Response(content=str(twiml), media_type="application/xml")
-

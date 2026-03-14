@@ -6,10 +6,6 @@ from pydantic import BaseModel, Field
 class BroadcastCallRequest(BaseModel):
     number: str = Field(..., description="Phone number to call in E.164 format.")
     message: str = Field(..., min_length=1, description="Message to speak in the call.")
-    public_base_url: str | None = Field(
-        default=None,
-        description="Public URL Twilio can reach, such as an ngrok URL.",
-    )
 
 
 class CollectDetailsCallRequest(BaseModel):
@@ -18,10 +14,6 @@ class CollectDetailsCallRequest(BaseModel):
         default="Hello from the grievance helpline. Please describe your issue after the beep.",
         min_length=1,
         description="Prompt that will be played before recording the caller.",
-    )
-    public_base_url: str | None = Field(
-        default=None,
-        description="Public URL Twilio can reach, such as an ngrok URL.",
     )
 
 
@@ -35,4 +27,3 @@ class CallRecord(BaseModel):
     transcript: str | None = None
     created_at: str
     completed_at: str | None = None
-
